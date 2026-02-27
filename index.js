@@ -112,16 +112,46 @@ async function generateConfig() {
   const config = {
     log: { access: '/dev/null', error: '/dev/null', loglevel: 'none' },
     inbounds: [
-      { port: ARGO_PORT, protocol: 'vless', settings: { clients: [{ id: UUID}], decryption: 'none', fallbacks: [{ dest: 3001 }, { path: "/vless-argo", dest: 3002 }, { path: "/vmess-argo", dest: 3003 }, { path: "/trojan-argo", dest: 3004 }] }, streamSettings: { network: 'tcp' } },
-      { port: 3001, listen: "127.0.0.1", protocol: "vless", settings: { clients: [{ id: UUID }], decryption: "none" }, streamSettings: { network: "tcp", security: "none" } },
-      { port: 3002, listen: "127.0.0.1", protocol: "vless", settings: { clients: [{ id: UUID, level: 0 }], decryption: "none" }, streamSettings: { network: "ws", security: "none", wsSettings: { path: "/vless-argo" } }, sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], metadataOnly: false } },
-      { port: 3003, listen: "127.0.0.1", protocol: "vmess", settings: { clients: [{ id: UUID, alterId: 0 }] }, streamSettings: { network: "ws", wsSettings: { path: "/vmess-argo" } }, sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], metadataOnly: false } },
-      { port: 3004, listen: "127.0.0.1", protocol: "trojan", settings: { clients: [{ password: UUID }] }, streamSettings: { network: "ws", security: "none", wsSettings: { path: "/trojan-argo" } }, sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], metadataOnly: false } },
+      // 主入口 VLESS WS
+      {
+        port: ARGO_PORT,
+        protocol: 'vless',
+        settings: { clients: [{ id: UUID }] },
+        streamSettings: {
+          network: 'ws',
+          security: 'none',
+          wsSettings: { path: '/vless-argo' }
+        }
+      },
+      // VMESS WS
+      {
+        port: 3003,
+        listen: "127.0.0.1",
+        protocol: "vmess",
+        settings: { clients: [{ id: UUID, alterId: 0 }] },
+        streamSettings: { network: "ws", wsSettings: { path: "/vmess-argo" } },
+        sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], metadataOnly: false }
+      },
+      // Trojan WS
+      {
+        port: 3004,
+        listen: "127.0.0.1",
+        protocol: "trojan",
+        settings: { clients: [{ password: UUID }] },
+        streamSettings: { network: "ws", security: "none", wsSettings: { path: "/trojan-argo" } },
+        sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], metadataOnly: false }
+      }
     ],
     dns: { servers: ["https+local://8.8.8.8/dns-query"] },
-    outbounds: [ { protocol: "freedom", tag: "direct" }, {protocol: "blackhole", tag: "block"} ]
+    outbounds: [
+      { protocol: "freedom", tag: "direct" },
+      { protocol: "blackhole", tag: "block" }
+    ]
   };
+
+  // 写入 config.json
   fs.writeFileSync(path.join(FILE_PATH, 'config.json'), JSON.stringify(config, null, 2));
+  console.log(`${FILE_PATH}/config.json generated successfully for Cloudflare Tunnel`);
 }
 
 // 判断系统架构
