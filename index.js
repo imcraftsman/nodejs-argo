@@ -649,7 +649,7 @@ app.get("/", async function(req, res) {
     const data = await fs.promises.readFile(filePath, 'utf8');
     res.send(data);
   } catch (err) {
-    res.send("Hello worldv2!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
+    res.send("Hello world v3!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
   }
 });
 
