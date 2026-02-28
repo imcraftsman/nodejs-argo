@@ -12,11 +12,11 @@ const XRAY_CONFIG = "/tmp/config.json";
 const CLOUDFLARED_PATH = "/tmp/cloudflared";
 
 const UUID = process.env.UUID || "9afd1229-b893-40c1-84dd-51e7ce204913";
-const DOMAIN = process.env.DOMAIN;
+const DOMAIN = process.env.ARGO_DOMAIN;
 const ARGO_AUTH = process.env.ARGO_AUTH;
 
 if (!DOMAIN) {
-  console.error("DOMAIN env not set");
+  console.error("ARGO_DOMAIN not set");
   process.exit(1);
 }
 
@@ -25,15 +25,20 @@ if (!ARGO_AUTH) {
   process.exit(1);
 }
 
+/* ---------------- 下载通用函数 ---------------- */
+
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
+
     https.get(url, (res) => {
       if (res.statusCode !== 200) {
         reject(`Download failed: ${url}`);
         return;
       }
+
       res.pipe(file);
+
       file.on("finish", () => {
         file.close(() => {
           fs.chmodSync(dest, 0o755);
@@ -44,12 +49,11 @@ function downloadFile(url, dest) {
   });
 }
 
+/* ---------------- Xray ---------------- */
+
 async function downloadXray() {
   console.log("[DEBUG] Downloading Xray...");
-  await downloadFile(
-    "https://amd64.ssss.nyc.mn/web",
-    XRAY_PATH
-  );
+  await downloadFile("https://amd64.ssss.nyc.mn/web", XRAY_PATH);
   console.log("[DEBUG] Xray ready");
 }
 
@@ -74,17 +78,17 @@ function createXrayConfig() {
       }
     ],
     outbounds: [
-      {
-        protocol: "freedom"
-      }
+      { protocol: "freedom" }
     ]
   };
 
   fs.writeFileSync(XRAY_CONFIG, JSON.stringify(config, null, 2));
+  console.log("[DEBUG] Xray config created");
 }
 
 function startXray() {
   console.log("[DEBUG] Starting Xray...");
+
   const xray = spawn(XRAY_PATH, ["run", "-c", XRAY_CONFIG]);
 
   xray.stdout.on("data", (d) =>
@@ -95,6 +99,8 @@ function startXray() {
     console.error("[XRAY-ERR]", d.toString())
   );
 }
+
+/* ---------------- Cloudflared ---------------- */
 
 async function downloadCloudflared() {
   console.log("[DEBUG] Downloading cloudflared...");
@@ -107,6 +113,7 @@ async function downloadCloudflared() {
 
 function startCloudflared() {
   console.log("[DEBUG] Starting cloudflared...");
+
   const cf = spawn(CLOUDFLARED_PATH, [
     "tunnel",
     "--edge-ip-version",
@@ -127,6 +134,8 @@ function startCloudflared() {
   );
 }
 
+/* ---------------- WS 代理 ---------------- */
+
 const proxy = httpProxy.createProxyServer({
   target: "http://127.0.0.1:3001",
   ws: true
@@ -140,6 +149,34 @@ app.use((req, res, next) => {
   }
 });
 
+const server = app.listen(PORT, async () => {
+  console.log(`[DEBUG] HTTP server running on ${PORT}`);
+
+  try {
+    await downloadXray();
+    createXrayConfig();
+    startXray();
+
+    await downloadCloudflared();
+    startCloudflared();
+  } catch (err) {
+    console.error("Startup error:", err);
+    process.exit(1);
+  }
+});
+
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/vless-argo") {
+    proxy.ws(req, socket, head);
+  }
+});
+
+/* ---------------- HTTP 接口 ---------------- */
+
+app.get("/", (req, res) => {
+  res.send("running");
+});
+
 app.get("/test", (req, res) => {
   res.send("ok");
 });
@@ -147,26 +184,10 @@ app.get("/test", (req, res) => {
 app.get("/sub", (req, res) => {
   const link =
     `vless://${UUID}@${DOMAIN}:443` +
-    `?type=ws&security=tls&host=${DOMAIN}` +
+    `?type=ws&security=tls` +
+    `&host=${DOMAIN}` +
     `&path=%2Fvless-argo#Argo`;
 
   const base64 = Buffer.from(link).toString("base64");
   res.send(base64);
-});
-
-const server = app.listen(PORT, async () => {
-  console.log(`[DEBUG] HTTP server running on ${PORT}`);
-
-  await downloadXray();
-  createXrayConfig();
-  startXray();
-
-  await downloadCloudflared();
-  startCloudflared();
-});
-
-server.on("upgrade", (req, socket, head) => {
-  if (req.url === "/vless-argo") {
-    proxy.ws(req, socket, head);
-  }
 });
