@@ -653,8 +653,12 @@ app.get("/", async function(req, res) {
     const data = await fs.promises.readFile(filePath, 'utf8');
     res.send(data);
   } catch (err) {
-    res.send("Hello world v4!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
+    res.send("Hello world v5!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
   }
+});
+
+app.get("/test", (req, res) => {
+  res.send("ok");
 });
 
 app.listen(PORT, () => console.log(`http server is running on port:${PORT}!`));
