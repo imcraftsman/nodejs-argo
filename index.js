@@ -29,31 +29,36 @@ function ensureBinary(path, name) {
 
 function createXrayConfig() {
   const config = {
-    log: { loglevel: "warning" },
-    inbounds: [
-      {
-        port: 3001,
-        protocol: "vless",
-        settings: {
-          clients: [
-            {
-              id: UUID,
-              flow: "xtls-rprx-vision"
-            }
-          ],
-          decryption: "none"
-        },
-        streamSettings: {
-          network: "xhttp",
-          security: "none",
-          xhttpSettings: {
-            path: "/vless-h2"
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 3001,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "9afd1229-b893-40c1-84dd-51e7ce204913"
           }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "/vless"
         }
       }
-    ],
-    outbounds: [{ protocol: "freedom" }]
-  };
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+};
 
   fs.writeFileSync("/tmp/config.json", JSON.stringify(config, null, 2));
   console.log("[DEBUG] Xray config created");
