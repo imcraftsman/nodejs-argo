@@ -110,7 +110,11 @@ function cleanupOldFiles() {
 // 生成xr-ay配置文件
 async function generateConfig() {
   const config = {
-    log: { access: '/dev/null', error: '/dev/null', loglevel: 'none' },
+    log: {
+  access: "/tmp/access.log",
+  error: "/tmp/error.log",
+  loglevel: "debug"
+},
     inbounds: [
       // 主入口 VLESS WS
       {
@@ -649,7 +653,7 @@ app.get("/", async function(req, res) {
     const data = await fs.promises.readFile(filePath, 'utf8');
     res.send(data);
   } catch (err) {
-    res.send("Hello world v3!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
+    res.send("Hello world v4!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!");
   }
 });
 
