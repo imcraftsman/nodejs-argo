@@ -1,64 +1,57 @@
-const express = require("express");
-const app = express();
-const axios = require("axios");
-const os = require("os");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
+const express = require("express");
+const { spawn } = require("child_process");
 const path = require("path");
-const { exec } = require("child_process");
 
-const FILE_PATH = ".tmp";
-const PORT = process.env.PORT || 8001;
+const app = express();
+
+/* ================================
+   基础变量
+================================ */
+
+const PORT = process.env.PORT || 8001;          // Node HTTP 服务端口
+const XRAY_PORT = 3001;                         // Xray 内部监听端口
+const XRAY_PATH = "/tmp/xray";
+const CONFIG_PATH = "/tmp/config.json";
+
 const UUID = process.env.UUID || "9afd1229-b893-40c1-84dd-51e7ce204913";
-const ARGO_PORT = process.env.ARGO_PORT || 8001;
-const ARGO_AUTH = process.env.ARGO_AUTH || "";
-const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";
+const DOMAIN = process.env.DOMAIN || "example.com";   // 你的隧道域名
+const XRAY_DOWNLOAD_URL = process.env.XRAY_URL || "https://amd64.ssss.nyc.mn/web";
 
-const CFIP = process.env.CFIP || ARGO_DOMAIN;
-const CFPORT = 443;
+/* ================================
+   下载 Xray
+================================ */
 
-if (!fs.existsSync(FILE_PATH)) {
-  fs.mkdirSync(FILE_PATH);
-}
-
-const XRAY_PATH = path.join(FILE_PATH, "xray");
-const CONFIG_PATH = path.join(FILE_PATH, "config.json");
-
-function log(msg) {
-  console.log(`[DEBUG] ${msg}`);
-}
-
-function getArch() {
-  return os.arch().includes("arm") ? "arm64" : "amd64";
-}
-
-async function downloadXray() {
-  const arch = getArch();
-  const url =
-    arch === "arm64"
-      ? "https://arm64.ssss.nyc.mn/web"
-      : "https://amd64.ssss.nyc.mn/web";
-
-  log("Downloading Xray from: " + url);
-
-  const response = await axios({
-    method: "get",
-    url,
-    responseType: "stream",
-  });
-
-  const writer = fs.createWriteStream(XRAY_PATH);
-  response.data.pipe(writer);
-
+function downloadXray(url) {
   return new Promise((resolve, reject) => {
-    writer.on("finish", () => {
-      fs.chmodSync(XRAY_PATH, 0o755);
-      const size = fs.statSync(XRAY_PATH).size;
-      log("Xray downloaded. Size: " + size);
-      resolve();
-    });
-    writer.on("error", reject);
+    console.log("[DEBUG] Downloading Xray from:", url);
+
+    const file = fs.createWriteStream(XRAY_PATH);
+    https.get(url, (response) => {
+      if (response.statusCode !== 200) {
+        reject("Download failed: " + response.statusCode);
+        return;
+      }
+
+      response.pipe(file);
+
+      file.on("finish", () => {
+        file.close(() => {
+          fs.chmodSync(XRAY_PATH, 0o755);
+          const size = fs.statSync(XRAY_PATH).size;
+          console.log("[DEBUG] Xray downloaded. Size:", size);
+          resolve();
+        });
+      });
+    }).on("error", reject);
   });
 }
+
+/* ================================
+   生成 Xray 配置
+================================ */
 
 function generateConfig() {
   const config = {
@@ -67,10 +60,14 @@ function generateConfig() {
     },
     inbounds: [
       {
-        port: ARGO_PORT,
+        port: XRAY_PORT,
         protocol: "vless",
         settings: {
-          clients: [{ id: UUID }],
+          clients: [
+            {
+              id: UUID
+            }
+          ],
           decryption: "none"
         },
         streamSettings: {
@@ -90,69 +87,72 @@ function generateConfig() {
   };
 
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-  log("Config generated:");
+  console.log("[DEBUG] Config generated:");
   console.log(JSON.stringify(config, null, 2));
 }
 
+/* ================================
+   启动 Xray
+================================ */
+
 function startXray() {
-  log("Starting Xray...");
+  console.log("[DEBUG] Starting Xray...");
 
-  const child = exec(`${XRAY_PATH} -c ${CONFIG_PATH}`);
+  const xray = spawn(XRAY_PATH, ["run", "-config", CONFIG_PATH]);
 
-  child.stdout.on("data", (data) => {
+  xray.stdout.on("data", (data) => {
     console.log("[XRAY STDOUT]", data.toString());
   });
 
-  child.stderr.on("data", (data) => {
-    console.log("[XRAY STDERR]", data.toString());
+  xray.stderr.on("data", (data) => {
+    console.error("[XRAY STDERR]", data.toString());
   });
 
-  child.on("exit", (code) => {
+  xray.on("close", (code) => {
     console.log("[XRAY EXIT]", code);
   });
 }
 
-function startCloudflare() {
-  if (!ARGO_AUTH) {
-    log("No ARGO_AUTH provided, skipping tunnel.");
-    return;
-  }
+/* ================================
+   订阅接口
+================================ */
 
-  log("Starting Cloudflare Tunnel...");
+app.get("/sub", (req, res) => {
+  console.log("[DEBUG] Subscription requested");
 
-  exec(
-    `cloudflared tunnel --edge-ip-version auto --protocol http2 run --token ${ARGO_AUTH}`,
-    (err, stdout, stderr) => {
-      if (err) console.error(err);
-      console.log(stdout);
-      console.error(stderr);
-    }
-  );
-}
+  const node = `vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=%2Fvless-argo#debug-node`;
+
+  const base64 = Buffer.from(node).toString("base64");
+  res.send(base64);
+});
+
+/* ================================
+   测试接口
+================================ */
+
+app.get("/test", (req, res) => {
+  res.send("ok");
+});
+
+/* ================================
+   启动流程
+================================ */
 
 async function bootstrap() {
   try {
-    await downloadXray();
+    console.log("[INFO] Container booting...");
+
+    await downloadXray(XRAY_DOWNLOAD_URL);
     generateConfig();
     startXray();
-    startCloudflare();
-  } catch (e) {
-    console.error("BOOT ERROR:", e);
+
+    app.listen(PORT, () => {
+      console.log("[DEBUG] HTTP server running on port", PORT);
+    });
+
+  } catch (err) {
+    console.error("[FATAL ERROR]", err);
   }
 }
 
 bootstrap();
-
-app.get("/sub", (req, res) => {
-  const node = `vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless-argo#debug-node`;
-  const encoded = Buffer.from(node).toString("base64");
-  res.send(encoded);
-});
-
-app.get("/test", (req, res) => {
-  res.send("OK");
-});
-
-app.listen(PORT, () => {
-  log("HTTP server running on port " + PORT);
-});
