@@ -1,8 +1,9 @@
 const fs = require("fs");
 const express = require("express");
 const { spawn } = require("child_process");
+const httpProxy = require("http-proxy");
 
-const VERSION = "v1.1.0";
+const app = express();
 const PORT = 8001;
 
 const UUID = process.env.UUID || "9afd1229-b893-40c1-84dd-51e7ce204913";
@@ -14,8 +15,7 @@ if (!DOMAIN || !ARGO_AUTH) {
   process.exit(1);
 }
 
-const XRAY_PATH = "/usr/local/bin/xray/xray";
-const CLOUDFLARED_PATH = "/usr/local/bin/cloudflared";
+/* ---------------- 检测二进制 ---------------- */
 
 function ensureBinary(path, name) {
   if (!fs.existsSync(path)) {
@@ -25,40 +25,28 @@ function ensureBinary(path, name) {
   console.log(`[DEBUG] ${name} found`);
 }
 
-/* ---------- Xray Config (XHTTP + Flow) ---------- */
+const XRAY_PATH = "/usr/local/bin/xray/xray";
+const CLOUDFLARED_PATH = "/usr/local/bin/cloudflared";
+
+/* ---------------- Xray ---------------- */
 
 function createXrayConfig() {
   const config = {
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 3001,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "9afd1229-b893-40c1-84dd-51e7ce204913"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "security": "none",
-        "wsSettings": {
-          "path": "/vless"
+    log: { loglevel: "warning" },
+    inbounds: [
+      {
+        port: 3001,
+        protocol: "vless",
+        settings: { clients: [{ id: UUID }], decryption: "none" },
+        streamSettings: {
+          network: "ws",
+          security: "none",
+          wsSettings: { path: "/vless-argo" }
         }
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
-};
+    ],
+    outbounds: [{ protocol: "freedom" }]
+  };
 
   fs.writeFileSync("/tmp/config.json", JSON.stringify(config, null, 2));
   console.log("[DEBUG] Xray config created");
@@ -69,8 +57,10 @@ function startXray() {
   const xray = spawn(XRAY_PATH, ["run", "-c", "/tmp/config.json"]);
 
   xray.stdout.on("data", d => console.log("[XRAY]", d.toString()));
-  xray.stderr.on("data", d => console.error("[XRAY]", d.toString()));
+  xray.stderr.on("data", d => console.error("[XRAY-ERR]", d.toString()));
 }
+
+/* ---------------- Cloudflared ---------------- */
 
 function startCloudflared() {
   console.log("[DEBUG] Starting cloudflared...");
@@ -89,28 +79,43 @@ function startCloudflared() {
   const cf = spawn(CLOUDFLARED_PATH, args);
 
   cf.stdout.on("data", d => console.log("[CLOUDFLARED]", d.toString()));
-  cf.stderr.on("data", d => console.log("[CLOUDFLARED]", d.toString()));
+  cf.stderr.on("data", d => console.error("[CLOUDFLARED-ERR]", d.toString()));
 }
 
-/* ---------- HTTP Server ---------- */
+/* ---------------- WS Proxy ---------------- */
 
-const app = express();
+const proxy = httpProxy.createProxyServer({
+  target: "http://127.0.0.1:3001",
+  ws: true
+});
 
-app.get("/", (req, res) => res.send(VERSION));
+app.use((req, res, next) => {
+  if (req.url === "/vless-argo") proxy.web(req, res);
+  else next();
+});
+
 app.get("/test", (req, res) => res.send("ok"));
+app.get("/", (req, res) => res.send("running"));
 
 app.get("/sub", (req, res) => {
   const link =
-    `vless://${UUID}@${DOMAIN}:443?type=xhttp&security=tls&flow=xtls-rprx-vision&host=${DOMAIN}&path=%2Fvless-h2#Argo-${VERSION}`;
+    `vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&path=%2Fvless-argo#Argo`;
   res.send(Buffer.from(link).toString("base64"));
 });
 
-app.listen(PORT, () => {
+/* ---------------- 启动 ---------------- */
+
+const server = app.listen(PORT, () => {
   console.log(`[DEBUG] HTTP server running on ${PORT}`);
+
   ensureBinary(XRAY_PATH, "Xray");
   ensureBinary(CLOUDFLARED_PATH, "cloudflared");
 
   createXrayConfig();
   startXray();
   startCloudflared();
+});
+
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/vless-argo") proxy.ws(req, socket, head);
 });
