@@ -5,110 +5,183 @@ const httpProxy = require("http-proxy");
 const os = require("os");
 
 const app = express();
-const PORT = 8001;
-const VERSION = "v1.3.0";
 
-const UUID = process.env.UUID || "5336c0bb-c34a-4756-8dea-b6a6ea1bc0da";
+const VERSION = "v2.0";
+
+/* ==============================
+   环境变量
+============================== */
+
+const PORT = process.env.PORT || 8001;
+const UUID = process.env.UUID || "auto-uuid-not-set";
 const DOMAIN = process.env.ARGO_DOMAIN;
 const ARGO_AUTH = process.env.ARGO_AUTH;
+
+const WS_PATH = process.env.WS_PATH || "/vless-argo";
+
+const SUB_ENABLE =
+  process.env.SUB_ENABLE === "false"
+    ? false
+    : true;
+
+/* ==============================
+   校验
+============================== */
 
 if (!DOMAIN || !ARGO_AUTH) {
   console.error("ARGO_DOMAIN or ARGO_AUTH not set");
   process.exit(1);
 }
 
-/* ---------------- 检测二进制 ---------------- */
+/* ==============================
+   二进制路径
+============================== */
+
+const XRAY_PATH = "/usr/local/bin/xray/xray";
+const CLOUDFLARED_PATH = "/usr/local/bin/cloudflared";
+
+/* ==============================
+   检查文件
+============================== */
 
 function ensureBinary(path, name) {
   if (!fs.existsSync(path)) {
     console.error(`${name} not found at ${path}`);
     process.exit(1);
   }
-  console.log(`[DEBUG] ${name} found`);
+
+  console.log(`[OK] ${name} found`);
 }
 
-const XRAY_PATH = "/usr/local/bin/xray/xray";
-const CLOUDFLARED_PATH = "/usr/local/bin/cloudflared";
-
-/* ---------------- Xray ---------------- */
+/* ==============================
+   生成 Xray 配置
+============================== */
 
 function createXrayConfig() {
+
   const config = {
+
     log: {
-      loglevel: "warning"   // 优化1：关闭 debug
+      loglevel: "warning"
     },
+
     inbounds: [
       {
         port: 3001,
         protocol: "vless",
+
         settings: {
-          clients: [{ id: UUID }],
+          clients: [
+            {
+              id: UUID
+            }
+          ],
           decryption: "none"
         },
+
         streamSettings: {
           network: "ws",
           security: "none",
-          wsSettings: { path: "/vless-argo" }
+
+          wsSettings: {
+            path: WS_PATH
+          }
         }
       }
     ],
+
     outbounds: [
       {
         protocol: "freedom",
-        settings: {},
-        streamSettings: {
-          sockopt: {
-            tcpFastOpen: true,
-            tcpNoDelay: true
-          }
-        }
+        settings: {}
       }
     ]
   };
 
   fs.writeFileSync("/tmp/config.json", JSON.stringify(config, null, 2));
-  console.log(`[INFO] Xray config created (version ${VERSION})`);
+
+  console.log("[INFO] Xray config created");
 }
 
-function startXray() {
-  console.log(`[INFO] Starting Xray (version ${VERSION})...`);
-  const xray = spawn(XRAY_PATH, ["run", "-c", "/tmp/config.json"]);
+/* ==============================
+   启动 Xray
+============================== */
 
-  xray.stdout.on("data", d => console.log("[XRAY]", d.toString()));
-  xray.stderr.on("data", d => console.error("[XRAY-ERR]", d.toString()));
+function startXray() {
+
+  console.log("[INFO] Starting Xray");
+
+  const xray = spawn(XRAY_PATH, [
+    "run",
+    "-config",
+    "/tmp/config.json"
+  ]);
+
+  xray.stdout.on("data", d => {
+    console.log("[XRAY]", d.toString());
+  });
+
+  xray.stderr.on("data", d => {
+    console.error("[XRAY-ERR]", d.toString());
+  });
+
+  xray.on("error", err => {
+    console.error("[XRAY ERROR]", err);
+  });
 
   xray.on("exit", (code, signal) => {
-    console.error(`[XRAY] exited with code ${code}, signal ${signal}, restarting...`);
-    setTimeout(startXray, 2000);
+
+    console.error(`[XRAY] exited code=${code} signal=${signal}`);
+
+    setTimeout(startXray, 3000);
   });
 }
 
-/* ---------------- Cloudflared ---------------- */
+/* ==============================
+   启动 Cloudflare Tunnel
+============================== */
 
 function startCloudflared() {
-  console.log(`[INFO] Starting cloudflared (version ${VERSION})...`);
+
+  console.log("[INFO] Starting cloudflared");
 
   const args = [
     "tunnel",
-    "--edge-ip-version", "auto",
-    "--protocol", "http2",
-    "--no-autoupdate",           // 优化3：禁止自动更新
+    "--edge-ip-version",
+    "auto",
+
+    "--protocol",
+    "http2",
+
+    "--no-autoupdate",
+
     "run",
-    "--token", ARGO_AUTH
+
+    "--token",
+    ARGO_AUTH
   ];
 
   const cf = spawn(CLOUDFLARED_PATH, args);
 
-  cf.stdout.on("data", d => console.log("[CLOUDFLARED]", d.toString()));
-  cf.stderr.on("data", d => console.error("[CLOUDFLARED-ERR]", d.toString()));
+  cf.stdout.on("data", d => {
+    console.log("[CLOUDFLARED]", d.toString());
+  });
+
+  cf.stderr.on("data", d => {
+    console.error("[CLOUDFLARED-ERR]", d.toString());
+  });
 
   cf.on("exit", (code, signal) => {
-    console.error(`[CLOUDFLARED] exited with code ${code}, signal ${signal}, restarting...`);
-    setTimeout(startCloudflared, 3000);
+
+    console.error(`[CLOUDFLARED] exited code=${code}`);
+
+    setTimeout(startCloudflared, 5000);
   });
 }
 
-/* ---------------- WS Proxy ---------------- */
+/* ==============================
+   WS 反代
+============================== */
 
 const proxy = httpProxy.createProxyServer({
   target: "http://127.0.0.1:3001",
@@ -116,57 +189,105 @@ const proxy = httpProxy.createProxyServer({
 });
 
 app.use((req, res, next) => {
-  if (req.url.startsWith("/vless-argo")) proxy.web(req, res);
-  else next();
+
+  if (req.url.startsWith(WS_PATH)) {
+
+    proxy.web(req, res);
+
+  } else {
+
+    next();
+
+  }
+
 });
 
-/* ---------------- 性能监控接口 ---------------- */
+/* ==============================
+   系统信息
+============================== */
 
 app.get("/metrics", (req, res) => {
+
   const memory = process.memoryUsage();
-  const cpuLoad = os.loadavg();
 
   res.json({
+
     version: VERSION,
-    uptime_seconds: process.uptime(),
+
+    uptime: process.uptime(),
+
     memory_mb: {
       rss: (memory.rss / 1024 / 1024).toFixed(2),
-      heapUsed: (memory.heapUsed / 1024 / 1024).toFixed(2),
-      heapTotal: (memory.heapTotal / 1024 / 1024).toFixed(2)
+      heap: (memory.heapUsed / 1024 / 1024).toFixed(2)
     },
-    cpu_load_1m: cpuLoad[0],
-    cpu_load_5m: cpuLoad[1],
-    cpu_load_15m: cpuLoad[2]
+
+    load: os.loadavg()
   });
+
 });
 
-/* ---------------- HTTP 接口 ---------------- */
+/* ==============================
+   健康检测
+============================== */
 
-app.get("/test", (req, res) => res.send(`ok (version ${VERSION})`));
-app.get("/health", (req, res) => res.send(`running (version ${VERSION})`));
-app.get("/", (req, res) => res.send(`running (version ${VERSION})`));
+app.get("/test", (req, res) => {
 
-app.get("/sub", (req, res) => {
-  const link =
-    `vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&path=%2Fvless-argo#Argo`;
-  res.send(Buffer.from(link).toString("base64"));
+  res.send(`ok (${VERSION})`);
+
 });
 
-/* ---------------- 启动 ---------------- */
+app.get("/health", (req, res) => {
+
+  res.send(`running (${VERSION})`);
+
+});
+
+/* ==============================
+   订阅（可关闭）
+============================== */
+
+if (SUB_ENABLE) {
+
+  app.get("/sub", (req, res) => {
+
+    const link =
+`vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&path=${encodeURIComponent(WS_PATH)}#Argo`;
+
+    res.send(Buffer.from(link).toString("base64"));
+
+  });
+
+}
+
+/* ==============================
+   HTTP Server
+============================== */
 
 const server = app.listen(PORT, () => {
-  console.log(`[INFO] HTTP server running on ${PORT} (version ${VERSION})`);
+
+  console.log(`HTTP server running on ${PORT}`);
 
   ensureBinary(XRAY_PATH, "Xray");
   ensureBinary(CLOUDFLARED_PATH, "cloudflared");
 
   createXrayConfig();
+
   startXray();
+
   startCloudflared();
+
 });
 
+/* ==============================
+   Websocket Upgrade
+============================== */
+
 server.on("upgrade", (req, socket, head) => {
-  if (req.url.startsWith("/vless-argo")) {
+
+  if (req.url.startsWith(WS_PATH)) {
+
     proxy.ws(req, socket, head);
+
   }
+
 });
