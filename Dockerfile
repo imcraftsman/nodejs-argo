@@ -1,28 +1,25 @@
-# ---------- Stage 1: cloudflared ----------
-FROM cloudflare/cloudflared:latest AS cloudflared
-
-# ---------- Stage 2: main image ----------
-FROM node:20-slim
+FROM node:20-alpine
 
 WORKDIR /app
 
-# 复制 cloudflared 二进制
-COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
+COPY package.json .
+RUN npm install
 
-# 安装 curl unzip
-RUN apt-get update && \
-    apt-get install -y curl unzip && \
-    mkdir -p /usr/local/bin/xray && \
-    curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && \
-    unzip /tmp/xray.zip -d /usr/local/bin/xray && \
-    chmod +x /usr/local/bin/xray/xray && \
-    rm -rf /tmp/xray.zip && \
-    apt-get clean
+COPY index.js .
 
-# 复制 Node 项目
-COPY package*.json ./
-RUN npm install --production
-COPY index.js ./
+# 安装 xray
+RUN apk add --no-cache unzip curl
+
+RUN curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip \
+ && unzip xray.zip \
+ && mkdir -p /usr/local/bin/xray \
+ && mv xray /usr/local/bin/xray/ \
+ && chmod +x /usr/local/bin/xray/xray
+
+# 安装 cloudflared
+RUN curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+ -o /usr/local/bin/cloudflared \
+ && chmod +x /usr/local/bin/cloudflared
 
 EXPOSE 8001
 
