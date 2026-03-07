@@ -1,19 +1,20 @@
 const fs = require("fs");
 const express = require("express");
 const { spawn } = require("child_process");
-const httpProxy = require("http-proxy");
 const os = require("os");
 
 const app = express();
 
-const VERSION = "v2.0";
+const VERSION = "v2.1";
 
 /* ==============================
    环境变量
 ============================== */
 
-const PORT = process.env.PORT || 8001;
+const PORT = process.env.PORT || 8000;
+
 const UUID = process.env.UUID || "auto-uuid-not-set";
+
 const DOMAIN = process.env.ARGO_DOMAIN;
 const ARGO_AUTH = process.env.ARGO_AUTH;
 
@@ -45,12 +46,17 @@ const CLOUDFLARED_PATH = "/usr/local/bin/cloudflared";
 ============================== */
 
 function ensureBinary(path, name) {
+
   if (!fs.existsSync(path)) {
+
     console.error(`${name} not found at ${path}`);
+
     process.exit(1);
+
   }
 
   console.log(`[OK] ${name} found`);
+
 }
 
 /* ==============================
@@ -66,41 +72,56 @@ function createXrayConfig() {
     },
 
     inbounds: [
+
       {
-        port: 3001,
+        port: 8001,
+
         protocol: "vless",
 
         settings: {
+
           clients: [
             {
               id: UUID
             }
           ],
+
           decryption: "none"
         },
 
         streamSettings: {
+
           network: "ws",
+
           security: "none",
 
           wsSettings: {
+
             path: WS_PATH
+
           }
+
         }
+
       }
+
     ],
 
     outbounds: [
+
       {
         protocol: "freedom",
         settings: {}
       }
+
     ]
+
   };
 
   fs.writeFileSync("/tmp/config.json", JSON.stringify(config, null, 2));
 
   console.log("[INFO] Xray config created");
+
 }
 
 /* ==============================
@@ -125,16 +146,14 @@ function startXray() {
     console.error("[XRAY-ERR]", d.toString());
   });
 
-  xray.on("error", err => {
-    console.error("[XRAY ERROR]", err);
-  });
-
   xray.on("exit", (code, signal) => {
 
-    console.error(`[XRAY] exited code=${code} signal=${signal}`);
+    console.error(`[XRAY] exited code=${code}`);
 
     setTimeout(startXray, 3000);
+
   });
+
 }
 
 /* ==============================
@@ -146,7 +165,9 @@ function startCloudflared() {
   console.log("[INFO] Starting cloudflared");
 
   const args = [
+
     "tunnel",
+
     "--edge-ip-version",
     "auto",
 
@@ -159,6 +180,7 @@ function startCloudflared() {
 
     "--token",
     ARGO_AUTH
+
   ];
 
   const cf = spawn(CLOUDFLARED_PATH, args);
@@ -176,31 +198,10 @@ function startCloudflared() {
     console.error(`[CLOUDFLARED] exited code=${code}`);
 
     setTimeout(startCloudflared, 5000);
+
   });
+
 }
-
-/* ==============================
-   WS 反代
-============================== */
-
-const proxy = httpProxy.createProxyServer({
-  target: "http://127.0.0.1:3001",
-  ws: true
-});
-
-app.use((req, res, next) => {
-
-  if (req.url.startsWith(WS_PATH)) {
-
-    proxy.web(req, res);
-
-  } else {
-
-    next();
-
-  }
-
-});
 
 /* ==============================
    系统信息
@@ -222,6 +223,7 @@ app.get("/metrics", (req, res) => {
     },
 
     load: os.loadavg()
+
   });
 
 });
@@ -243,7 +245,7 @@ app.get("/health", (req, res) => {
 });
 
 /* ==============================
-   订阅（可关闭）
+   订阅
 ============================== */
 
 if (SUB_ENABLE) {
@@ -260,14 +262,15 @@ if (SUB_ENABLE) {
 }
 
 /* ==============================
-   HTTP Server
+   启动 HTTP API
 ============================== */
 
-const server = app.listen(PORT, () => {
+app.listen(PORT, () => {
 
-  console.log(`HTTP server running on ${PORT}`);
+  console.log(`API server running on ${PORT}`);
 
   ensureBinary(XRAY_PATH, "Xray");
+
   ensureBinary(CLOUDFLARED_PATH, "cloudflared");
 
   createXrayConfig();
@@ -275,19 +278,5 @@ const server = app.listen(PORT, () => {
   startXray();
 
   startCloudflared();
-
-});
-
-/* ==============================
-   Websocket Upgrade
-============================== */
-
-server.on("upgrade", (req, socket, head) => {
-
-  if (req.url.startsWith(WS_PATH)) {
-
-    proxy.ws(req, socket, head);
-
-  }
 
 });
